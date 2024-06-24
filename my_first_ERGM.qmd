@@ -1,0 +1,331 @@
+---
+title: "指数ランダムグラフモデル (ERGM)"
+date: last-modified
+format:
+  html:
+    toc: true
+    toc-depth: 3
+---
+
+本資料は，鈴木 (2017) の第７章を参考に，ERGMによるデータ分析をRで手を動かしながら学ぶことを主旨とする．
+
+## ネットワーク分析における統計的仮説検定
+データ分析において，手元の観測値がたまたま得られただけなのか，母集団の性質を反映した有意味なものとして解釈して良いのかを判断する方法として，統計的仮説検定のフレームワークが広く使われている．よくなされる例は，「２群の母平均に差はない」，「２つの変数は無相関である」などの帰無仮説のもとで，手元の観測値を得る確率が十分に小さい場合に，帰無仮説を棄却し，対立仮説を採択する．帰無仮説が棄却されたとき，分析結果は統計的に有意であると判断される．
+
+カイ二乗検定や $t$ 検定では，既知の統計量の分布に基づいて有意性が判定される．しかし一般に，ネットワークの各指標の分布は未知であり，ノード数や密度などの条件によって指標の取りえる範囲や平均値などは変化する．そこで，**帰無仮説に基づいて確率的にネットワークを生成**するモンテカルロ・シミュレーションによって近似的な統計量の分布を求めて仮説検定を行う**ノンパラメトリック検定**のアプローチが用いられる． このような検定法としてQAP検定とCUG検定がある．また，{statnet} パッケージおよび {RSiena} パッケージを用いたネットワークデータの多変量解析の方法も存在し，その一つが指数ランダムグラフモデル (Exponential Random Graph Model; ERGM) である．
+
+## 指数ランダムグラフモデル
+### $p_1$ モデル
+有向ランダムグラフでは，ノード間に一定の確率で有向リンクが張られるが，ノード $i$ と $j$ の間にリンクが存在する確率 $p_{ij}$ は次のロジスティックモデルで表すことができる．
+
+$$
+p_{ij} = \frac{\exp(\theta)}{1+\exp(\theta)}
+$$
+たとえば，$\theta=0$ のときは $p_{ij} = 1/2$ より，コイントスでノードの間にリンクを張っていくランダムグラフになる．
+
+注意すべきは，あるノード間にリンクが張られるかどうかは，他のリンクの有無に依存せず，相互に独立であるということだ．したがって，たとえばノード $i$ から $j$ へのリンクがあって，かつノード $j$ から $k$ へのリンクが存在する確率は $p_{ij}p_{jk}$
+ とそれぞれの確率の積で書ける．よって，どのノード間もリンク確率が一定であるとすれば，リンクの集合が得られる確率はリンク確率の累乗で表せるということになる．
+ 
+一般に，ランダムグラフ $Y$ において，ある特定のグラフ $y$ が得られる確率は，次の式で表せる．
+
+$$
+\Pr(Y=y) = \frac{\exp\{\theta L(y)\}}{Z}
+$$
+ただし，$L(y)$ はグラフ $y$ に含まれるリンクの数であり，$Z$ は規格化定数である．これは**指数分布族** (exponential family) と呼ばれる確率分布の一種なので，この後に登場する派生モデルも含めてこのランダムグラフに関するモデルは，**指数ランダムグラフモデル** (exponential random graph model; ERGM) と呼ばれる．
+
+## {statnet} パッケージの導入
+### パッケージとデータの読み込み
+Rでは {statnet} パッケージに含まれる {ergm} パッケージで ERGM による分析を行うことができる．まずは，サンプルデータを使って，{ergm} の基本的な記述法の例を示す．
+
+```{r}
+# パッケージの読み込み
+pacman::p_load(statnet)
+# データの読み込み
+data(florentine)
+```
+サンプルデータは，ルネサンス期フィレンツェの名家の婚姻関係のネットワークである．ネットワーク・オブジェクトはデフォルトで`flomarriage`という変数に格納されており，`flomarriage`と入力するとネットワークの基本的な情報が出力される．
+```{r}
+flomarriage
+```
+この出力から，ネットワークは16個のノードと20本のリンクからなる無向ネットワークであることがわかる．`flomarriage`のデータ型を確認すると
+
+```{r}
+class(flomarriage)
+```
+network型のオブジェクトには，ノードやリンクに属性を付与することができる．たとえば，`flomarriage`には一族ごとに家名（`vertex.name`）や富（`wealth`）に関する属性が与えられている．属性は次のようなコマンドで参照できる．
+```{r}
+flomarriage %v% "vertex.names"
+flomarriage %v% "wealth"
+```
+### ネットワークの可視化
+これらの属性を用いて，ノードの大きさで富の大きさを確認できるように婚姻関係ネットワークを可視化する．
+```{r}
+plot(
+    flomarriage, 
+    vertex.cex = (flomarriage %v% "wealth") / 25,
+    displaylabels = TRUE)
+```
+どうやら，Strozzi家が最も裕福な一家だったようである．
+
+### 次数分布の確認
+ネットワークの構造を大まかにつかむために，次数分布を確認する．
+```{r}
+degree_distribution <- degree(flomarriage)
+hist(degree_distribution, 
+     breaks = seq(0, max(degree_distribution) + 1, by = 1),
+     main = "Degree Distribution of Florentine Marriage Network",
+     xlab = "Degree",
+     ylab = "Frequency",
+     col = "lightblue",
+     border = "black")
+```
+
+## ERGM実践
+ERGMを使用するには，`ergm()`関数を用いる．入出力の仕方は`glm()`関数によるロジスティック回帰モデルに似ているが，説明変数に関しては多岐にわたるルールがある．詳しくは`?ergm.terms`によるヘルプを参照．
+
+### ランダムグラフモデル (Erdős–Rényi モデル)
+まずは，シンプルなケースとしてリンク数 (`edges`) だけを条件としたランダムグラフモデルで分析を行う．
+
+```{r}
+flomarriage_model0 <- ergm(flomarriage ~ edges)
+summary(flomarriage_model0)
+```
+ここで計算された係数`-1.6094`は，リンク数が1増加したときの対数オッズであり，これを用いて婚姻関係ネットワーク内のあるリンクが存在する確率を計算すると，次のようになる．
+
+$$
+p = \frac{\exp(-1.6094)}{1+\exp(-1.6094)}
+$$
+```{r}
+exp(coef(flomarriage_model0)) / (1 + exp(coef(flomarriage_model0)))
+```
+このリンク存在確率 $p=0.1666667$ は，ノード数 $N=16$，リンク数 $L=20$ の無向ネットワークの密度
+
+$$
+\frac{L}{\dbinom N 2} = \frac{20}{120} = 0.1666667
+$$
+に一致する．
+
+### 推移性を追加したモデル
+説明変数に推移的な関係（三角形）の数 (`triangle`) を加えて分析を行う．
+```{r}
+set.seed(321)
+flomarriage_model1 <- ergm(flomarriage ~ edges + triangle)
+summary(flomarriage_model1)
+```
+ここで，ネットワーク内の二者間にリンクが存在するときの条件付き対数オッズは，$\alpha$を`edges`の係数，$\beta$を`triangle`の係数とすると
+
+$$
+\alpha\times\text{change in the number of ties}+\beta\times\text{change in number of triangles}
+$$
+である．
+
+- 三角形を作らないリンクについては，条件付きオッズは $\alpha$
+- 三角形を１つ作るリンクについては，$\alpha + \beta$
+- 三角形を２つ作るリンクについては，$\alpha + 2\beta$
+
+`plogis()`関数と`coef()`関数を使えば，これら３つのケースに対応するリンク接続確率はそれぞれ，以下で与えられる．
+```{r}
+plogis(coef(flomarriage_model1)[[1]] + (0:2) * coef(flomarriage_model1)[[2]])
+```
+また，$p$ 値の推定結果を見ると，`edges`の係数がゼロという帰無仮説は有意水準0.1%で棄却されるが，`triangle`の係数がゼロであるという帰無仮説は棄却されない．
+
+### ノードの属性を説明変数に入れたモデル
+一族の富の大きさのようなノードの属性がリンクの存在確率に影響を与えるかを分析する．富の大きさの単位は連続値（千リラ）で与えられるので，説明変数の指定には`nodecov()`を使う．`nodecov()`は連続値をとるノードの属性について，２つのノードの和をとった統計量を説明変数に組み込む関数である．
+```{r}
+flomarriage_model2 <- ergm(flomarriage ~ edges + nodecov("wealth"))
+summary(flomarriage_model2)
+```
+`nodecov.wealth`の推定結果から，富の大きさが有意な正の効果を持つことがわかった．つまり，両家の富の和が大きいほど婚姻関係は結ばれやすいということである．
+
+#### モデルの評価
+モデルの評価は出力されるAICやBICで行う．`Smaller is better.`とあるように，これらの指標が小さいほど良いモデルと考えられる．
+
+## 有向ネットワークの分析
+有向ネットワークの例として，[サンプソンの修道院の好意ネットワーク](https://networkdata.ics.uci.edu/netdata/html/sampson.html)として知られるデータを用いた分析を行う．
+```{r}
+data(sampson)
+samplike
+```
+ノード数が18，リンク数が88の有向ネットワークであることがわかる．次にネットワークを描画する．
+```{r}
+plot(
+    samplike,
+    vertex.cex = 5,
+    arrowhead.cex = 1.5,
+    displaylabels = TRUE,
+    label.pos = 5,
+    label = 1:18
+)
+```
+
+### 次数分布の確認
+出次数と入次数の分布を確認する．
+```{r}
+# samplikeの出次数と入次数を計算
+out_degree_distribution <- degree(samplike, cmode = "outdegree")
+in_degree_distribution <- degree(samplike, cmode = "indegree")
+
+# 出次数分布をヒストグラムとして描画
+par(mfrow = c(1, 2)) # グラフを2行1列に配置
+
+hist(out_degree_distribution, 
+     breaks = seq(0, max(out_degree_distribution) + 1, by = 1),
+     main = "",
+     xlab = "Out-Degree",
+     ylab = "Frequency",
+     col = "lightblue",
+     border = "black")
+
+# 入次数分布をヒストグラムとして描画
+hist(in_degree_distribution, 
+     breaks = seq(0, max(in_degree_distribution) + 1, by = 1),
+     main = "",
+     xlab = "In-Degree",
+     ylab = "Frequency",
+     col = "lightgreen",
+     border = "black")
+```
+
+### 生産性（ハブ性）と牽引性（オーソリティ性）の効果を含むモデルA {#hub-autho}
+まず，$p_1$ モデルにおける生産性 (`sender`) と牽引性 (`receiver`) の効果を含むモデルで分析を行う．
+```{r}
+samplike_model1 <- ergm(samplike ~ edges + sender + receiver)
+summary(samplike_model1)
+```
+各ノードの出次数と入次数に基づいて，その効果が推定されているが，ノード1については推定値が示されていない．これは説明変数の間に線形の関係が生じるのを避けるためである．
+
+### 牽引性と相互性を含むモデルB {#autho-mutual}
+次に，牽引性 (`receiver`) と相互性 (`mutual`) の効果を推定する．`ergm()`の出力は長いのでここでは省略している．
+```{r}
+#| output: false
+samplike_model2 <- ergm(samplike ~ edges + receiver + mutual)
+```
+```{r}
+summary(samplike_model2)
+```
+推定結果より，相互性 (`mutual`) の効果は有意であり，AICやBICを見ても<a href="#hub-autho">モデルA</a>よりも当てはまりが良くなっている．
+
+## Goodness of Fit
+有向ネットワークに対して作った<a href="#hub-autho">モデルA</a>と<a href="#autho-mutual">モデルB</a>は，モデルBの方がデータへの当てはまりが良いことがわかった．しかし，MCMCシミュレーションによる変化が生じていないかを確認するために，モデルによって生成されるネットワークがオリジナルのネットワークの統計量を再現できているかを確認した方が良い．モデルの goodness of fit を評価するには`gof()`関数を使う．`gof()`関数は指定したモデルからシミュレーションによって多数生成されたネットワークの統計量の分布を求め，観測されたネットワークのと統計量と比較する関数である．
+```{r}
+gof_samplike_model2 <- gof(samplike_model2)
+par(mfrow = c(3,2), mar = c(4, 4, 3, 1)) 
+# プロットのレイアウトを2行2列に設定し，各プロットのマージン（上下左右）をそれぞれ4, 4, 3, 1に設定
+plot(gof_samplike_model2)
+```
+上図のように，シミュレーションによって生成されたネットワーク群の各種統計量の分布が箱ひげ図で出力され，実線で表された実際のネットワーク統計量と比較することができる．ここでは，入次数，出次数，edge-wise shared partners，頂点間最短距離の分布は，実際のネットワークから無視できないほど大きな違いは生じていない．
+
+## ホモフィリーの分析
+次に，ホモフィリー (homophily)，標語的には「似たもの同士はつながりやすい」と表現される現象を分析する^[英語には同じ意味を表す "birds of a feather flock together" ということわざがある．]．使用するデータは，{ergm} パッケージに含まれる高校生の友人関係ネットワーク `faux.mesa.high` である．
+```{r}
+data(faux.mesa.high)
+(fmh <- faux.mesa.high)
+```
+表示の通り，205個のノードと203のリンクからなる無向ネットワークである．リンクは相互に友人として認めた関係を表す．また，ノードの属性として学年，人種，性別が付与されている．まずは学年と性別に注目し，それぞれの分布をみてみる．
+```{r}
+table(fmh %v% "Grade")
+table(fmh %v% "Sex")
+```
+`Grade 7`に属する生徒の数が最も多く，女子と男子はだいたい半々であることがわかる．では，これらの生徒たちは，どの程度同じ学年や性別の相手と友人関係にあるのか．リンク単位の属性の組合せの集計量（e.g., 男子同士のつながりの数）は，`mixingmatrix()`関数で調べることができる．
+```{r}
+mixingmatrix(fmh, "Grade")
+mixingmatrix(fmh, "Sex")
+```
+下の行列を見ると，女子同士の組合せが82組，男子同士の組合せが50組，男女の組合せが71組であることが確認でき，合計すると $82+50+71=203$ でネットワークのリンク数の $203$ に一致している．これらの行列の対角成分が大きいほど，ホモフィリーがあると考えられる．
+
+いずれの行列も対角成分に集中しているので，どうやらホモフィリーがありそうだが，ネットワークの見た目にも反映されているだろうか．学年ごとに色分けし，性別をノードの形で区別したネットワークを描画して確認する．
+```{r}
+plot(
+    fmh, 
+     vertex.col = "Grade", 
+     vertex.side = ((fmh %v% "Sex" == "F") * 17 + 3)
+    )
+legend(
+    "topright",      # 位置
+    legend = 7:12,   # 凡例
+    fill = 7:12,     # それぞれの凡例に色を割り当て
+    title = "Grade"
+)
+legend(
+    "bottomright", 
+    legend = c("Female", "Male"),
+    pch = 1:2,                    # 凡例にノードのシンボルを追加
+    title = "Sex"
+)
+```
+`Grade 7`や`Grade 8`の生徒は，同学年で友達になりやすい傾向がありそうに見える．しかし，ある学年では友達ができやすく，ある学年では友達ができにくいといった，学年ごとの効果が外生的に存在する場合は，`mixingmatrix`でわかる組合せの分布だけからホモフィリーの効果があるとは判断できない．そこで，**外生的に与えられたノードの属性の効果を統制したホモフィリーの効果**を ERGM によって分析する．
+
+### カテゴリカルな属性の効果（モデル１） {#fmh_model1}
+学年や性別のようなカテゴリカルな属性の効果は`nodefactor()`で指定できる．`nodefactor()`項は，リンクの両端の一方あるいは両方に注目する属性をもつノードが何個あるかをモデルに入れる^[両端の場合は2回カウントされる．]．ここでも，説明変数同士の線形関係を避けるために，デフォルトでは１番目のカテゴリの係数は推定されない．
+```{r}
+fmh_model1 <- ergm(fmh ~ edges + nodefactor("Grade") + nodefactor("Sex"))
+summary(fmh_model1)
+```
+推定結果から，9年生，10年生，男子であることに有意な負の効果があることがわかる．これらの効果を統制しながらホモフィリーの効果をモデルに追加して分析する．
+
+### ホモフィリーの効果（モデル２） {#fmh_model2}
+ホモフィリーの効果は`nodematch()`関数で表現し，その引数に`diff = TRUE`と指定するとカテゴリ別の一致度からそれぞれのホモフィリーの効果が推定される．`diff = TRUE`はどのカテゴリでホモフィリーが現れているかを知りたいときに用いる．なお，デフォルトでは`diff = FALSE`であり，すべてのカテゴリの一致度からその変数に関するホモフィリーの効果が推定される．
+```{r}
+fmh_model2 <- ergm(fmh ~ edges 
+                         + nodefactor("Grade") 
+                         + nodefactor("Sex") 
+                         + nodematch("Grade", diff = TRUE)
+                         + nodematch("Sex"))
+```
+```{r}
+summary(fmh_model2)
+```
+`nodematch`の推定結果から12年生以外のすべての学年でホモフィリーの効果が有意に存在することがわかる．また，ホモフィリーを統制する（モデルに組み込む）ことで，先の<a href="#fmh_model1">モデル１</a>と比べて学年の効果の現れ方や有意性に変化が現れている．モデル１では学年が上がると友達を持ちにくくなる印象を受けるが，モデル２では逆に学年の効果は高学年ほど大きくなる傾向にある．この差異が生じるのは，７年生は他の学年よりも人数が多く，ホモフィリーの効果も大きいので友達関係を作りやすくなっていたからだと考えられる．
+
+### Goodness of Fit
+<a href="#fmh_model1">モデル１</a>と<a href="#fmh_model2">モデル２</a>の goodness of fit を確認する．
+```{r}
+gof_fmh_model1 <- gof(fmh_model1)
+par(mfrow = c(2,2))
+plot(gof_fmh_model1, main = "GOF diagnostics of model 1")
+```
+```{r}
+gof_fmh_model2 <- gof(fmh_model2)
+par(mfrow = c(2,2))
+plot(gof_fmh_model2, main = "GOF diagnostics of model 2")
+```
+
+## リンクの履歴効果の分析
+ERGM ではノードの属性だけでなく，リンクに関する属性も説明変数にすることができる．Harris (2014) の分析例に倣って，{sna} パッケージに含まれている Coleman の高校生ネットワークを使って，**先行する時点の友達関係の有無が後の時点のリンクの有無に影響するか**を分析する．Coleman の高校生ネットワークは，73人の男子高校生の友達関係ネットワークで，1957年秋と1958年春の２時点でよく付き合いのある相手を挙げてもらった方向性のあるデータである．よって，秋の友達関係とその翌年の春の友達関係という２時点のネットワークデータを含んでいる．配列型データとして格納されており，その次元は`2, 73, 73`である．
+```{r}
+#| output: false
+pacman::p_load(igraph)
+
+data(coleman)
+coord1 <- gplot(coleman, g = 1) # ネットワーク(g = 1)のプロットの座標をcoord1に保存
+```
+```{r}
+par(mfrow = c(1,2))
+gplot(coleman, g = 1, coord = coord1, main = "Fall, 1957")
+gplot(coleman, g = 2, coord = coord1, main = "Spring, 1958")
+```
+秋の友達関係ネットワーク`g = 1`においてリンクがあったときに，春のネットワーク`g = 2`においてもリンクのある割合を求める．
+```{r}
+fall <- coleman[1, , ]          # 秋のネットワークの隣接行列
+spring <- coleman[2, , ]        # 春のネットワークの隣接行列
+sum(spring * fall) / sum(fall)
+```
+次に，ERGM を用いて秋の友達関係ネットワークにリンクがあったときに春のネットワークでもリンクのある確率を求めてみる．説明変数にリンクの属性を指定するには，`edgecov()`を使用する．ここでは，秋のネットワークの隣接行列`fall`を属性値として与える．
+```{r}
+coleman_model1 <- ergm(spring ~ edges + edgecov(fall))
+summary(coleman_model1)
+```
+推定で得られた`edges`と`edgecov`の係数をそれぞれ $\alpha,\beta$ とすると，秋の友達関係ネットワークでリンクがあったとき春のネットワークでも関係のある確率は，
+
+$$
+\frac{\exp(\alpha + \beta)}{1 + \exp(\alpha + \beta)}
+$$
+で計算できる．
+```{r}
+exp(sum(coleman_model1$coefficients)) / (1 + exp(sum(coleman_model1$coefficients)))
+```
+単にこの条件付き確率を求めるだけなら，先ほどの隣接行列を使った方法でも良いが，ERGM を使うメリットは，相互性のような構造的指標やノードの属性などの他の変数の効果を統制しながら（説明変数に加えながら）多変量解析として分析を進めることができる点にある．
+
+## 参考文献
+- 鈴木努, 2017, 『Rで学ぶデータサイエンス8 ネットワーク分析 第2版』共立出版.
+- Jenine K. Harris. *An Introduction to Exponential Random Graph Modeling*. Sage, 2014.

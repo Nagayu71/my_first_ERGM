@@ -1,3 +1,10 @@
+# MacOS
+.DS_Store
+
+# working space file
+my_first_ERGM_working.R
+my_first_ggraph.R
+
 # History files
 .Rhistory
 .Rapp.history
